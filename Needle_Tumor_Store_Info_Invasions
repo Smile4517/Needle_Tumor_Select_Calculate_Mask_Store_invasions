@@ -1,0 +1,552 @@
+image_folder = 'C:\Users\Owner\Desktop\Stoll Fellowship Code\Raw Image Data\Cropped_Images';
+filenames = dir(fullfile(image_folder,'*tif'));
+total_images = numel(filenames);
+
+%Ask user if any images need to be rotated in order to have cavity on left
+%side
+prompt = { 'Do you want to rotate any images?(y/n)'};
+dlgtitle = 'Rotating Images';
+dims = [1 40];
+definput = {'y'};
+answer = inputdlg(prompt, dlgtitle, dims, definput);
+
+indices_rotated_I = [];
+if strcmp(answer, 'y')
+    prompt1 = {'How many images would you like to flip?'};
+    dlgtitle1 = 'Number of Images';
+    dims1 = [1 40];
+    total_flip = inputdlg(prompt1, dlgtitle1, dims1);
+    total_flip_num = str2double(total_flip);
+end
+
+indices_rotated_I = [];
+for k = 1: total_flip_num
+    prompt = {'Enter the index of image you would like to rotate. Please click okay after each index'};
+    dlgtitle = 'Index of Image/Images';
+    dims = [1 40];
+    indices = inputdlg(prompt, dlgtitle, dims);
+    indices_num = str2double(indices);
+    indices_rotated_I(end+1) = indices_num;
+end
+
+%Initialize arrays for all of the calculations:
+distance_to_cav_array = [];
+total_tumor_area = [];
+Width_tumor_core = [];
+individual_invasion_sum = [];
+total_fraction_invaded = [];
+tumor_index_invaded = [];
+for n = 1:total_images
+    f = fullfile(image_folder, filenames(n).name);
+    Image = imread(f);
+    figure(n);
+    %Flips Specified images
+    for c = 1:total_flip_num
+    if n == indices_rotated_I(c)
+        Image = flip(Image, 2);
+        Image_adjust = imadjust(Image);
+        imshow(Image_adjust);
+    end
+    end 
+
+%Canny edge detection to identify cells, escape cavity, and needle tumor
+%periphery
+[~,threshold] = edge(Image,'canny');
+fudgefactor = 2;
+BWs = edge(Image, 'canny', threshold*fudgefactor);
+
+%Shows mask generated from canny edge detection
+TPmask = boundarymask(BWs);
+TPBoundary = imshow(labeloverlay(Image, TPmask, 'Transparency',0));
+
+% Fill in holes in mask because some edges are detected within needle tumor
+% periphery
+BWdfill = imfill(TPmask,'holes');
+imshow(BWdfill)
+title('Binary Image with Filled Holes')
+
+% Morphological closing to further eliminate holes in mask (Works well for
+% E2_T9  and E2_T15
+se2 = strel('disk', 8);
+BWclose = imclose(BWdfill, se2);
+imshow(BWclose); 
+
+%Interactive closing that enables user to click larger areas that have not
+%been closed by the above methods. User must double click when finished. 
+%If there are no big holes, user can simply double click, and the code will
+%continue
+if n == 1
+    fill_title = 'Fill Holes';
+    uiwait(msgbox({'Please click on larger black areas of image that you would like to fill.'; 'Double click when finished.'}, fill_title));
+end
+
+BWdfill2 = imfill(BWclose);
+imshow(BWdfill2)
+
+%Final iteration of fill holes in order to make sure everything was covered
+BWdfill3 = imfill(BWdfill2, 'holes');
+imshow(BWdfill3)
+title('Binary Image with Filled Holes')
+
+prompt = {'Would you like to continue fill (y/n)?'};
+    dlgtitle = 'Fill Holes';
+    dims = [1 40];
+    input = {'y'};
+    Fill_again = inputdlg(prompt, dlgtitle, dims, input);
+    
+if strcmp(Fill_again, 'y')
+    Fill2_title = 'Fill Holes';
+    uiwait(msgbox({'Please click on larger black areas of image that you would like to fill.'; 'Double click when finished.'}, Fill2_title));
+    BWdfill4 = imfill(BWdfill3);
+    BW_active_contour = activecontour(Image,BWdfill4,10,'edge');
+else
+%Active contour to perfect the edge as morphological closing may have
+%caused mask to go beyond needle tumor periphery
+BW_active_contour = activecontour(Image,BWdfill3,10,'edge');
+%imageSegmenter(textureBottom);
+end
+imshow(BW_active_contour); % shows mask for needle tumor periphery
+%(in most cases still connected to cavity)
+
+%By drawing rectangle, user can separate the cavity from the needle tumor
+%periphery. This code will generate mask of cut
+if n == 1
+     msg_title = 'Drawing Elliptical and Rectangular Masks';
+     uiwait(msgbox({'Please draw elliptical mask, and double click when finished.';' Then draw rectangular mask, and double click in overlapping region when finished'}));
+end
+ 
+ellipseMask1 = drawellipse;
+wait(ellipseMask1);
+Emask = createMask(ellipseMask1);
+%clear ellipseMask1;
+line = drawrectangle;
+wait(line);
+Rmask = createMask(line);
+
+%Flip both rectangular mask and elliptical mask
+Rmask_inv = ~Rmask;
+Emask_inv = ~Emask;
+BW_Rmask = BW_active_contour.*Rmask_inv;
+imshow(BW_Rmask);
+BW_Emask = BW_Rmask.*Emask_inv;
+imshow(BW_Emask);
+
+%Combines both elliptical and rectangular masks into cavity mask
+cavity = Rmask+Emask.*(Rmask==0);
+imshow(cavity);
+cavity_BW = imbinarize(cavity);
+imshow(cavity_BW);
+%cavity_BW_edge = activecontour(Image,cavity_BW,'edge',50);
+%imshow(cavity_BW); 
+
+%Apply edge active contour so that edge properly wraps around the
+%tumor periphery
+I2Bmask = activecontour(Image,BW_Emask,20,'edge');
+imshow(I2Bmask);
+
+%Applies filter to eliminate the smaller segments in code (2 options here:
+%area filter and opening
+BW2 = bwareaopen(I2Bmask, 500);
+imshow(BW2);
+
+BWmask = boundarymask(BW2);
+imshow(BWmask);
+    
+Image1_adjust1 = imadjust(Image);
+%generates outline of tumor periphery separate from escape cavity
+imshow(labeloverlay(Image1_adjust1,BWmask, 'Transparency',0));
+FileName_output = fullfile('C:\Users\Owner\Desktop\Stoll Fellowship Code\Output_BW2',sprintf('%d.tif',n));
+imwrite(BW2,FileName_output);% writes image to outputBW2 folder
+
+imshow(BW2);
+%h1 = impixelinfo;
+
+imshow(cavity_BW);
+%h = impixelinfo;
+
+[rows1,col] = find(BW2); %Finds all x and y coordinates of nonzero elements in binary image
+Max_xcor_tum = min(col); %max point of invasion spread; this is taking into account individual invasions too
+[rows_cav, col_cav] = find(cavity_BW);
+Max_xcor_cav = max(col_cav);% Finds maximum point of cavity cut
+distance_to_cav_array(n) = Max_xcor_cav - Max_xcor_tum; % Calculates distance from cavity to tumor core
+%distance_to_cav_array = Max_xcor_cav - Max_xcor_tum;
+%From left to right, the column index increases, meaning that the smaller
+%the Max_xcor_tum value, the further the tumor has invaded. Thus, if the
+%value is smaller than the cavity, then the tumor has invaded or at least
+%passed the cavity either through single cell migration or collective
+%migration above or below the cavity
+
+%Add array that will tell you which tumors have invaded the cavity
+if (Max_xcor_cav > Max_xcor_tum || Max_xcor_cav == Max_xcor_tum)
+    tumor_index_invaded(n) = true;
+    distance_to_cav_array(n) = 0;
+    %distance_to_cav_array = 0;
+end
+
+
+BW_active_contour_L = bwlabel(BW2);
+stats = regionprops(logical(BW_active_contour_L),'Centroid', 'Area', 'Perimeter', 'MajorAxisLength', 'MinorAxisLength');
+%Summing all of the individual cells plus entire tumor with invasions
+objectnum = length(stats);
+area_array = [];
+for i=1:objectnum
+        s = regionprops(logical(BW2), 'Area');
+        areas = cat(1,s.Area);
+        %Concatenate last value of centroids to the end of centroids_arr array (insert as new row to the bottom). 
+        area_arr = [area_array; areas];
+end
+%total_tumor_area(n) = sum(area_arr);
+%total_tumor_area = sum(area_arr);
+
+
+%filename = fullfile('C:\Users\Owner\Desktop\Stoll Fellowship Code\Stats_Invasion',sprintf('%d.xlsx',n)); 
+
+filename = 'Stats_Invasion_cells.xlsx';
+table = struct2table(stats);
+writetable(table,filename,'Sheet',n);
+ 
+%table = struct2table(stats);
+%filename = fullfile('C:\Users\Owner\Desktop\Stoll Fellowship Code\Stats_Invasion',sprintf('%d.xlsx',n));
+%sprintf('%d.xlsx',n));
+%writetable(table,filename); 
+
+%Generate the max area (collective invasions and tumor core)
+allareas = [stats.Area];
+numcol = length(allareas);
+[sortedAreas, sortIndexes] = sort(allareas, 'descend');
+Max_area = ismember(BW_active_contour_L, sortIndexes(1));
+imshow(Max_area);
+
+%Generate masked image 
+Max_area_thresh = zeros(size(Max_area));
+% Compute d + x
+D_X = distance_to_cav_array(n)+500;
+Max_xcor_cav3 = Max_xcor_cav + D_X;
+for j = 1:size(Max_area, 1)
+    for k = 1:size(Max_area, 2)
+        pixel = Max_area(j,k); % Use max area here instead of BW2( which includes individual invasions)because individual invasion sum is calculated later
+if (k >= Max_xcor_cav3)
+    pixel = 0;
+else
+    pixel = Max_area(j,k);
+end
+Max_area_thresh(j, k) = pixel;
+    end
+end
+imshow(Max_area_thresh);
+Max_area_thresh_BW = imbinarize(Max_area_thresh);
+
+BW_active_contour_Max = bwlabel(Max_area_thresh_BW);
+stats_c = regionprops(logical(BW_active_contour_Max),'Centroid', 'Area', 'Perimeter', 'MajorAxisLength', 'MinorAxisLength');
+%Summing all of the individual cells plus entire tumor with invasions
+objectnum_c = length(stats_c);
+area_array_c = [];
+for i=1:objectnum
+        s = regionprops(logical(Max_area_thresh), 'Area');
+        areas = cat(1,s.Area);
+        %Concatenate last value of centroids to the end of centroids_arr array (insert as new row to the bottom). 
+        area_arr = [area_array_c; areas];
+end
+%Sum all of the individual cells plus entire tumor with invasions
+total_tumor_area(n) = sum(area_arr);
+
+SE = strel('disk', 80);
+Tumor_core_open = imopen(Max_area_thresh_BW, SE);
+imshow(Tumor_core_open);
+
+%Code to generate complete tumor core; this will help get rid of the
+%curves at the end of the collective invasions that are part of the tumor
+%core
+Tumor_core_full = imopen(Max_area, SE);
+imshow(Tumor_core_full);
+Tumor_core_full_mask = activecontour(Image, Tumor_core_full, 'Chan-Vese', 20);
+imshow(Tumor_core_full_mask);
+
+%Tumor core for smaller image
+Tumor_coreBW_Mask = activecontour(Image, Tumor_core_open, 'Chan-Vese', 20);
+imshow(Tumor_coreBW_Mask);
+
+%h = impixelinfo;
+allareas_c = [stats_c.Area];
+numcol_c = length(allareas_c);
+[sortedAreas_c, sortIndexes_c] = sort(allareas_c, 'descend');
+
+Max_xcor_cav2 = Max_xcor_cav + 400;% Add pixels to maximum point of cavity 
+[y, x] = find(Tumor_coreBW_Mask);%Locate all nonzero elements in tumor core mask 
+[y_cor, x_cor]= find(x == Max_xcor_cav2);% Find where column = max_xcor_cav value
+Min_y_width = min(y_cor);
+Max_y_width = max(y_cor);
+Width_tumor_core(n) = Max_y_width - Min_y_width;
+%Width_tumor_core = Max_y_width - Min_y_width;
+individual_invasion_sum(n) = sum(allareas(sortIndexes(2:numcol)));
+%individual_invasion_sum = sum(allareas(sortIndexes(2:numcol)));
+%Subtract1 = imsubtract(BW2, Max_area);
+%imshow(Subtract1);
+
+FileName_output_Max_Area_thresh_BW = fullfile('C:\Users\Owner\Desktop\Stoll Fellowship Code\Output_Max_Area',sprintf('%d.tif',n));
+imwrite(Max_area_thresh,FileName_output_Max_Area_thresh_BW);
+
+Max_area_Image_L = bwlabel(Max_area_thresh_BW);
+stats_Max_Area_thresh = regionprops(logical(Max_area_Image_L), 'Area');
+
+% To generate collective invasion image
+Subtract1 = imsubtract(Max_area_thresh_BW, Tumor_core_full_mask);
+imshow(Subtract1);
+
+% When subtracting the two images above, we get a large white region in the
+% area that should be masked. The for loop below sets all of those pixels
+% back to zero
+Subtract1_a = zeros(size(Max_area));
+for j = 1:size(Max_area, 1)
+    for k = 1:size(Max_area, 2)
+        pixel_s = Subtract1(j,k);
+if (k >= Max_xcor_cav3)
+    pixel_s = 0;
+else
+    pixel_s = Subtract1(j,k);
+end
+Subtract1_a(j, k) = pixel_s;
+    end
+end
+imshow(Subtract1_a);
+
+Invasions = bwareaopen(Subtract1_a, 300); % Filters out areas smaller than 300 pixels
+imshow(Invasions); % Final collective invasion image
+
+Invasion_L = bwlabel(Invasions);
+%imshow(label2rgb(BW_active_contour_L));
+stats_collective_invasions = regionprops(logical(Invasion_L),'Area');
+num = length(stats_collective_invasions);
+collective_area_array = [];
+for i=1:num
+        s = regionprops(logical(Invasion_L), 'Area');
+        areas = cat(1,s.Area);
+        %Concatenate last value of centroids to the end of centroids_arr array (insert as new row to the bottom). 
+        collective_area_arr = [collective_area_array; areas];
+end
+
+collective_invasion_area_array(n) = sum(collective_area_arr);
+%collective_invasion_area = sum(collective_area_arr);
+
+Invasion_mask = boundarymask(Invasions);
+imshow(labeloverlay(Image1_adjust1,Invasion_mask, 'Transparency',0));%generates 
+
+%Stats for tumor core of masked image
+stats_tumor_core = regionprops(logical(Tumor_coreBW_Mask), 'Area');
+%Tumor Core outline
+Tumor_coreBW_Bound = boundarymask(Tumor_coreBW_Mask);
+imshow(Tumor_coreBW_Bound);
+    
+%Image1_adjust1 = imadjust(Image);
+%imshow(labeloverlay(Image1_adjust1,Tumor_coreBW_Bound, 'Transparency',0));%generates 
+
+total_fraction_invaded(n) = 1 -((stats_tumor_core.Area)/(stats_Max_Area_thresh.Area));
+%total_fraction_invaded = 1 -((stats_tumor_core.Area)/(stats_Max_Area.Area));
+
+FileName_output_Tumor_core_mask = fullfile('C:\Users\Owner\Desktop\Stoll Fellowship Code\Output_Tumor_Core',sprintf('%d.tif',n));
+imwrite(Tumor_coreBW_Mask,FileName_output_Tumor_core_mask);
+
+BW_active_contour_L2 = bwlabel(Tumor_coreBW_Mask);% Regionprops to extract information from the tumor core
+%imshow(label2rgb(BW_active_contour_L));
+stats_core = regionprops(logical(BW_active_contour_L2),'Centroid', 'Area', 'Perimeter', 'MajorAxisLength', 'MinorAxisLength');
+table_core = struct2table(stats_core);
+
+%Initialize cell arrays to store data for selected invasions
+index_collective_invasions = {};
+index_amoeboid_invasions = {};
+index_mesenchymal_invasions = {};
+
+%Initialize arrays for both x and y coordinates of amoeboid invasions
+X_A_cor = [];
+Y_A_cor = [];
+Subtract_C = imsubtract(BW2, Max_area);
+%imshow(Subtract_C);
+Classify_Invasions = bwareaopen(Subtract_C, 300);
+Classify_Invasions_L = bwlabel(Classify_Invasions);
+stats_classify = regionprops(Classify_Invasions_L, 'Area');
+Dim = size(stats_classify);
+num_objects = Dim(1,1);
+%imshow(Classify_Invasions_L);
+
+if num_objects > 0
+dlgtitle = 'Classify Individual Invasions';
+uiwait(msgbox({'Please click on amoeboid invasions'; 'Please click return when you are finished selecting invasions'},dlgtitle));
+count = 500;
+num_clicks = 0; % Keep track of how many times user has clicked
+figure, imshow(Classify_Invasions);
+while count < 1000
+%for c = 1: num_objects
+%figure, imshow(Classify_Invasions);
+hold on
+[yCenter, xCenter] = ginput(1);
+hold off
+if isempty(yCenter)
+    break;
+end
+% put x over selected cell
+hold on
+plot(yCenter, xCenter, 'r*');
+% up the count
+count = count + 1;
+% up number of times user clicked
+num_clicks = num_clicks + 1;
+%Save coordinates into arrays
+X_A_cor(num_clicks) = xCenter;
+Y_A_cor(num_clicks) = yCenter;
+%all_A_Y = (yCenter);
+%all_A_X = (xcenter);
+end
+for s = 1: num_clicks
+[L, num_Obj] = bwlabel(Classify_Invasions, 4);
+b = bwboundaries(Classify_Invasions);
+Selec = cell(1,1);
+for k = 1:num_Obj
+    Obj = L ==k;
+      bb = b{k};
+      X_obj = bb(:, 1);
+      Y_obj = bb(:, 2);
+      Selec{k} = inpolygon(X_A_cor(s),Y_A_cor(s),X_obj,Y_obj); 
+end
+Selec;
+Selec = [Selec{:}];
+[value,index] = max(Selec);
+Obj = L ==index;
+%figure, imshow(Obj);
+stats_A_invasion = regionprops(logical(Obj), 'all');
+stats_A_invasion_cell = struct2cell(stats_A_invasion);
+index_amoeboid_invasions{s} = stats_A_invasion_cell;
+%stats_amoeboid_I_Table = regionprops('table', logical(Obj), 'all');
+save(['C:\Users\Owner\Desktop\Stoll Fellowship Code\Needle_Tumor_Analysis\analysis_amoeboid' num2str(n) '.mat'],'index_amoeboid_invasions')
+end
+
+dlgtitle = 'Classify Invasions';
+uiwait(msgbox({'Please click on mesenchymal invasions'; 'Please click return when you are finished selecting invasions'},dlgtitle));
+count = 500;
+num_clicks_M = 0; % Initialize number of clicks for mesenchymal invasions
+% Initialize arrays for both x and y coordinates for mesenchymal invasions
+X_M_cor = [];
+Y_M_cor = [];
+%figure, imshow(Classify_Invasions);
+while count < 1000
+%for c = 1: num_objects
+%figure, imshow(Classify_Invasions);
+hold on
+[y_Center, x_Center] = ginput(1);
+hold off
+if isempty(y_Center)
+    break;
+end
+% put x over selected cell
+hold on
+plot(y_Center, x_Center, 'r*');
+% down the count
+count = count + 1;
+% up number of times user clicked
+num_clicks_M = num_clicks_M + 1;
+%Save coordinates into arrays
+X_M_cor(num_clicks_M) = x_Center;
+Y_M_cor(num_clicks_M) = y_Center;
+%all_A_Y = (yCenter);
+%all_A_X = (xcenter);
+end
+
+for t = 1: num_clicks_M
+[L_2, num_Obj_2] = bwlabel(Classify_Invasions, 4);
+b_2 = bwboundaries(Classify_Invasions);
+Selec_2 = cell(1,1);
+for k = 1:num_Obj_2
+    Obj = L_2 ==k;
+      bb = b_2{k};
+      X_obj_2 = bb(:, 1);
+      Y_obj_2 = bb(:, 2);
+      Selec_2{k} = inpolygon(X_M_cor(t),Y_M_cor(t),X_obj_2,Y_obj_2); 
+  end
+Selec_2;
+Selec_2 = [Selec_2{:}];
+[value_2,index_2] = max(Selec_2);
+Obj = L_2 == index_2;
+%figure, imshow(Obj);
+stats_M_invasion = regionprops(logical(Obj), 'all');
+stats_M_invasion_cell = struct2cell(stats_M_invasion);
+index_mesenchymal_invasions{t} = stats_M_invasion_cell;
+%stats_mesenchymal_I_Table = regionprops('table', logical(Obj), 'all');
+save(['C:\Users\Owner\Desktop\Stoll Fellowship Code\Needle_Tumor_Analysis\analysis_mesenchymal' num2str(n) '.mat'],'index_mesenchymal_invasions')
+end
+end
+%imshow(Selected_Invasions);
+
+X_C_cor = [];
+Y_C_cor = [];
+dlgtitle = 'Classify Collective Invasions';
+uiwait(msgbox({'Please click on collective invasions'; 'Please click return when you are finished selecting invasions'},dlgtitle));
+count = 500;
+num_clicks_C = 0; % Keep track of how many times user has clicked
+figure, imshow(Invasions);
+while count < 1000
+%for c = 1: num_objects
+%figure, imshow(Classify_Invasions);
+hold on
+[y_C_Center, x_C_Center] = ginput(1);
+hold off
+if isempty(y_C_Center)
+    break;
+end
+% put x over selected cell
+hold on
+plot(y_C_Center, x_C_Center, 'r*');
+%plot(y_C_Center, x_C_Center);
+%gtext(num_clicks_C, 'Color', 'red');
+% up the count
+count = count + 1;
+% up number of times user clicked
+num_clicks_C = num_clicks_C + 1;
+%Save coordinates into arrays
+X_C_cor(num_clicks_C) = x_C_Center;
+Y_C_cor(num_clicks_C) = y_C_Center;
+end
+
+for r = 1: num_clicks_C
+[L_C, num_Obj_C] = bwlabel(Invasions);
+b_C = bwboundaries(Invasions);
+Selec_C = cell(1,1);
+for k = 1:num_Obj_C
+    Obj = L_C ==k;
+      bb = b_C{k};
+      X_obj_C = bb(:, 1);
+      Y_obj_C = bb(:, 2);
+      Selec_C{k} = inpolygon(X_C_cor(r),Y_C_cor(r),X_obj_C,Y_obj_C); 
+end
+Selec_C;
+Selec_C = [Selec_C{:}];
+[value_C,index_C] = max(Selec_C);
+Obj = L_C ==index_C;
+%figure, imshow(Obj);
+stats_collective_I = regionprops(logical(Obj), 'all');
+stats_collective_I_cell = struct2cell(stats_collective_I);
+%index_collective_invasions{n} = stats_collective_I_cell;
+index_collective_invasions{r} = stats_collective_I_cell;
+%stats_collective_I_Table = regionprops('table', logical(Obj), 'all');
+%save(['C:\Users\Owner\Desktop\Stoll Fellowship Code\Needle_Tumor_Analysis\analysis_collective' num2str(r) '.mat'],'stats_collective_I_Table')
+save(['C:\Users\Owner\Desktop\Stoll Fellowship Code\Needle_Tumor_Analysis\analysis_collective' num2str(n) '.mat'],'index_collective_invasions')
+end
+
+filename = 'Tumor_core.xlsx';
+writetable(table_core,filename,'Sheet',n);
+
+%T = table(distance_to_cav_array, total_tumor_area, Width_tumor_core, collective_invasion_area, total_fraction_invaded);
+%display(T);
+Stat_output_core = fullfile('C:\Users\Owner\Desktop\Stoll Fellowship Code\Stats_Tumor_Core',sprintf('%d.xlsx', n));
+%sprintf('%d.xlsx');
+writetable(table_core,Stat_output_core);
+
+end
+
+display(distance_to_cav_array);
+display(total_tumor_area);
+display(Width_tumor_core);
+display(individual_invasion_sum);
+display(collective_invasion_area_array);
+display(total_fraction_invaded);
+display(tumor_index_invaded);
+%display(index_amoeboid_invasions);
+
